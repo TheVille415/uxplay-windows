@@ -7,6 +7,12 @@ param(
     [ValidateSet("x64", "arm64")]
     [string]$Architecture = "x64",
 
+    # MSVC platform toolset for the mDNSResponder projects, e.g. v143 (VS 2022)
+    # or v145 (VS 2026). Detected with vswhere when omitted: v143 is preferred
+    # when installed, otherwise the newest installed toolset is used.
+    [ValidatePattern("^v\d{3}$")]
+    [string]$PlatformToolset,
+
     [switch]$Force
 )
 
@@ -51,39 +57,91 @@ if (-not $Force -and $cacheValid) {
     return
 }
 
-$msbuildCommand = Get-Command msbuild.exe -ErrorAction SilentlyContinue
-$msbuild = if ($msbuildCommand) {
-    $msbuildCommand.Source
-} else {
-    $null
-}
-$vswhere = Join-Path ${env:ProgramFiles(x86)} `
-    "Microsoft Visual Studio\Installer\vswhere.exe"
-if (-not $msbuild -and (Test-Path -LiteralPath $vswhere)) {
-    $msbuild = & $vswhere `
-        -latest `
+$defaultToolset = "v143"
+
+# Each Visual Studio installation's MSBuild only sees the toolsets installed
+# into that installation, so pair every toolset with its own MSBuild.exe.
+function Get-InstalledToolsets {
+    $vswhere = Join-Path ${env:ProgramFiles(x86)} `
+        "Microsoft Visual Studio\Installer\vswhere.exe"
+    if (-not (Test-Path -LiteralPath $vswhere)) {
+        return @()
+    }
+
+    $installations = & $vswhere `
+        -all `
+        -prerelease `
         -products * `
         -requires Microsoft.Component.MSBuild `
-        -find "MSBuild\**\Bin\MSBuild.exe" |
-        Select-Object -First 1
+        -property installationPath
+    $found = @()
+    foreach ($installation in $installations) {
+        $msbuildPath = Join-Path $installation "MSBuild\Current\Bin\MSBuild.exe"
+        if (-not (Test-Path -LiteralPath $msbuildPath)) {
+            continue
+        }
+        $toolsetRoots = Get-ChildItem `
+            -Path (Join-Path $installation "MSBuild\Microsoft\VC\v*\Platforms\$msbuildPlatform\PlatformToolsets") `
+            -Directory `
+            -ErrorAction SilentlyContinue
+        foreach ($toolsetRoot in $toolsetRoots) {
+            Get-ChildItem -LiteralPath $toolsetRoot.FullName -Directory |
+                Where-Object { $_.Name -match "^v\d{3}$" } |
+                ForEach-Object {
+                    $found += [pscustomobject]@{
+                        Toolset = $_.Name
+                        Version = [int]$_.Name.Substring(1)
+                        MSBuild = $msbuildPath
+                    }
+                }
+        }
+    }
+    return $found
 }
 
-if (-not $msbuild) {
-    $candidates = Get-ChildItem `
-        -Path "$env:ProgramFiles\Microsoft Visual Studio\2022\*\MSBuild\Current\Bin\MSBuild.exe" `
-        -ErrorAction SilentlyContinue |
+$installedToolsets = @(Get-InstalledToolsets)
+$selected = $null
+if ($PlatformToolset) {
+    $selected = $installedToolsets |
+        Where-Object { $_.Toolset -eq $PlatformToolset } |
         Select-Object -First 1
-    if ($candidates) {
-        $msbuild = $candidates.FullName
+} else {
+    $selected = $installedToolsets |
+        Where-Object { $_.Toolset -eq $defaultToolset } |
+        Select-Object -First 1
+    if (-not $selected) {
+        $selected = $installedToolsets |
+            Sort-Object -Property Version -Descending |
+            Select-Object -First 1
+    }
+}
+
+if ($selected) {
+    $msbuild = $selected.MSBuild
+    $PlatformToolset = $selected.Toolset
+} else {
+    # No vswhere match: fall back to an MSBuild on PATH (e.g. a Developer
+    # PowerShell) and trust the requested or default toolset.
+    $msbuildCommand = Get-Command msbuild.exe -ErrorAction SilentlyContinue
+    $msbuild = if ($msbuildCommand) { $msbuildCommand.Source } else { $null }
+    if (-not $PlatformToolset) {
+        $PlatformToolset = $defaultToolset
     }
 }
 
 if (-not $msbuild) {
+    $installedList = ($installedToolsets | ForEach-Object Toolset | Sort-Object -Unique) -join ", "
+    if (-not $installedList) {
+        $installedList = "none"
+    }
     throw (
-        "Bonjour SDK is missing and MSBuild was not found. " +
-        "Install Visual Studio Build Tools with the C++ workload, then retry."
+        "Bonjour SDK is missing and no MSBuild with the $PlatformToolset " +
+        "$msbuildPlatform C++ toolset was found (installed: $installedList). " +
+        "Install Visual Studio Build Tools with the C++ workload, or pass " +
+        "-PlatformToolset with an installed toolset."
     )
 }
+Write-Host "Building Bonjour with PlatformToolset $PlatformToolset using $msbuild"
 
 $architectureOutDir = Join-Path $ProjectRoot "out\$Architecture"
 $sourceDir = Join-Path $architectureOutDir "bonjour-source"
@@ -119,14 +177,16 @@ if ($LASTEXITCODE -ne 0) {
 
 & $msbuild `
     (Join-Path $sourceDir "mDNSWindows\DLL\dnssd.vcxproj") `
-    /m /t:Build /p:Configuration=Release /p:Platform=$msbuildPlatform
+    /m /t:Build /p:Configuration=Release /p:Platform=$msbuildPlatform `
+    "/p:PlatformToolset=$PlatformToolset"
 if ($LASTEXITCODE -ne 0) {
     throw "dnssd.dll build failed."
 }
 
 & $msbuild `
     (Join-Path $sourceDir "mDNSWindows\SystemService\mDNSResponder.vcxproj") `
-    /m /t:Build /p:Configuration=Release /p:Platform=$msbuildPlatform
+    /m /t:Build /p:Configuration=Release /p:Platform=$msbuildPlatform `
+    "/p:PlatformToolset=$PlatformToolset"
 if ($LASTEXITCODE -ne 0) {
     throw "mDNSResponder.exe build failed."
 }
@@ -169,6 +229,7 @@ $stamp = [ordered]@{
     source = "apple-oss-distributions/mDNSResponder"
     tag = "rel/mDNSResponder-2881"
     architecture = $Architecture
+    platformToolset = $PlatformToolset
     patchSha256 = (
         Get-FileHash `
             (Join-Path $ProjectRoot "mdnsresponder-patches\2881.patch") `

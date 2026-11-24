@@ -181,7 +181,7 @@ void MainWindow::setupUI() {
     layout->addWidget(m_autostartCheckbox);
 
     // Force Fullscreen Checkbox
-    m_fullscreenCheckbox = new QCheckBox("Force Fullscreen (must select renderer)", this);
+    m_fullscreenCheckbox = new QCheckBox("Force Fullscreen", this);
     m_fullscreenCheckbox->setChecked(
         settings.value("force_fs_enabled", false).toBool()
     );
@@ -339,6 +339,13 @@ void MainWindow::applyRendererAndFullscreenArgs(QStringList &args) {
         mode = m_rendererCombo->currentData().toString();
     }
 
+    // The sink Auto picks ignores -fs. When fullscreen is forced in Auto mode,
+    // use D3D11 unless the arguments file already chooses a sink with -vs.
+    if (mode == "auto" && args.contains("-fs") && !args.contains("-vs")) {
+        mode = "d3d11";
+    }
+    m_activeRenderer = mode;
+
     if (mode == "auto") {
         return;
     }
@@ -430,8 +437,7 @@ void MainWindow::onAirplayStarted() {
 
     // Only explicitly selected Direct3D sinks are known to support Alt+Enter.
     // Leave automatically selected GStreamer sink windows unchanged.
-    if (!m_rendererCombo ||
-        m_rendererCombo->currentData().toString() == "auto") {
+    if (m_activeRenderer == "auto") {
         return;
     }
 

@@ -75,6 +75,7 @@ private:
     QCheckBox *m_bleCheckbox = nullptr;
     QCheckBox *m_fullscreenCheckbox = nullptr;
     QComboBox *m_rendererCombo = nullptr;
+    QString m_activeRenderer = "auto"; // renderer mode actually passed to UxPlay
     QSystemTrayIcon *m_tray = nullptr;
     QMenu *m_trayMenu = nullptr;
     QAction *m_statusAction = nullptr;

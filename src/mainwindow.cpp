@@ -123,7 +123,7 @@ void MainWindow::ensureSettingsFileExists() {
     QFile file(userArgumentsPath());
     if (file.open(QIODevice::WriteOnly | QIODevice::Text)) {
         QTextStream out(&file);
-        out << "-n uxplay-windows -nh";
+        out << "-n uxplay-windows -nh -nohold";
         file.close();
     }
 }
@@ -151,7 +151,7 @@ QStringList MainWindow::getArgumentsFromFile() {
 
     qWarning().noquote()
         << "[arguments] Unable to read the selected file; using built-in defaults.";
-    return QStringList() << "-n" << "uxplay-windows" << "-nh";
+    return QStringList() << "-n" << "uxplay-windows" << "-nh" << "-nohold";
 }
 
 void MainWindow::setupUI() {

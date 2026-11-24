@@ -46,7 +46,7 @@ Configuration precedence:
 
 1. `%ProgramData%\uxplay-windows\arguments.txt`
 2. `%APPDATA%\leapbtw\uxplay-windows\arguments.txt`
-3. built-in default: `-n uxplay-windows -nh`
+3. built-in default: `-n uxplay-windows -nh -nohold`
 
 The machine-wide file takes precedence when it exists, allowing administrators
 to enforce a shared configuration. When it is absent, each user can maintain
